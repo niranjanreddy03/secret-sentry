@@ -69,7 +69,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/secret-sentry/secret-sentry.git
+git clone https://github.com/niranjanreddy03/secret-sentry.git
 cd secret-sentry
 
 # Install all dependencies
@@ -90,7 +90,7 @@ This starts:
 
 ```bash
 # Clone the repository
-git clone https://github.com/secret-sentry/secret-sentry.git
+git clone https://github.com/niranjanreddy03/secret-sentry.git
 cd secret-sentry
 
 # Copy environment file
