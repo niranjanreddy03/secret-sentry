@@ -6,6 +6,7 @@ import Header from '@/components/layout/Header'
 import { Button, Card, Input, Select, Badge } from '@/components/ui'
 import { useToast } from '@/contexts/ToastContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { supabase } from '@/services/supabase'
 import {
   Settings,
   User,
@@ -100,11 +101,172 @@ export default function SettingsPage() {
   const [integrations, setIntegrations] = useState({
     githubConnected: false,
     githubUsername: '',
+    githubToken: '',
+    showGithubToken: false,
     gitlabConnected: false,
+    gitlabToken: '',
+    showGitlabToken: false,
     slackConnected: false,
     slackWorkspace: '',
     awsConnected: false,
   })
+  const [savingToken, setSavingToken] = useState(false)
+  const [validatingToken, setValidatingToken] = useState(false)
+
+  // Load GitHub token status from backend (NEVER loads actual token)
+  useEffect(() => {
+    const loadTokenStatus = async () => {
+      if (!supabaseUser?.id) return
+      
+      try {
+        const response = await fetch('/api/v1/integrations/github/token/status', {
+          headers: {
+            'Authorization': `Bearer ${await supabase.auth.getSession().then(s => s.data.session?.access_token)}`
+          }
+        })
+        
+        if (response.ok) {
+          const data = await response.json()
+          setIntegrations(prev => ({
+            ...prev,
+            githubConnected: data.configured,
+            githubUsername: data.github_username || '',
+            // Token is NEVER returned from backend for security
+            githubToken: data.configured ? '••••••••••••••••' : '',
+          }))
+        }
+      } catch (error) {
+        console.error('[SETTINGS] Failed to load token status')
+      }
+    }
+    loadTokenStatus()
+  }, [supabaseUser?.id])
+
+  // Save GitHub token via secure backend API
+  const handleSaveToken = async (provider: 'github' | 'gitlab') => {
+    if (!supabaseUser?.id) {
+      toast.error('Error', 'Please log in to save your token')
+      return
+    }
+    
+    const tokenValue = provider === 'github' ? integrations.githubToken : integrations.gitlabToken
+    
+    // Don't save masked placeholder
+    if (tokenValue === '••••••••••••••••') {
+      toast.info('No changes', 'Token is already configured')
+      return
+    }
+    
+    // Validate token format
+    if (provider === 'github' && !tokenValue.startsWith('ghp_') && !tokenValue.startsWith('github_pat_')) {
+      toast.error('Invalid token', "GitHub tokens start with 'ghp_' or 'github_pat_'")
+      return
+    }
+    
+    setSavingToken(true)
+    
+    try {
+      const session = await supabase.auth.getSession()
+      const accessToken = session.data.session?.access_token
+      
+      const response = await fetch('/api/v1/integrations/github/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({ token: tokenValue })
+      })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to save token')
+      }
+      
+      toast.success('Token saved', `Your ${provider.toUpperCase()} token has been validated and encrypted`)
+      setIntegrations(prev => ({
+        ...prev,
+        githubConnected: true,
+        githubUsername: data.github_username || '',
+        githubToken: '••••••••••••••••', // Never show actual token
+      }))
+    } catch (error: any) {
+      toast.error('Error', error.message || `Failed to save ${provider} token`)
+    } finally {
+      setSavingToken(false)
+    }
+  }
+
+  // Revoke/delete GitHub token
+  const handleRevokeToken = async (provider: 'github' | 'gitlab') => {
+    if (!supabaseUser?.id) return
+    
+    setSavingToken(true)
+    
+    try {
+      const session = await supabase.auth.getSession()
+      const accessToken = session.data.session?.access_token
+      
+      const response = await fetch('/api/v1/integrations/github/token', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      })
+      
+      if (!response.ok) {
+        throw new Error('Failed to revoke token')
+      }
+      
+      toast.success('Token revoked', `Your ${provider.toUpperCase()} token has been removed`)
+      setIntegrations(prev => ({
+        ...prev,
+        githubConnected: false,
+        githubUsername: '',
+        githubToken: '',
+      }))
+    } catch (error: any) {
+      toast.error('Error', error.message || 'Failed to revoke token')
+    } finally {
+      setSavingToken(false)
+    }
+  }
+
+  // Validate current token is still valid
+  const handleValidateToken = async () => {
+    if (!supabaseUser?.id) return
+    
+    setValidatingToken(true)
+    
+    try {
+      const session = await supabase.auth.getSession()
+      const accessToken = session.data.session?.access_token
+      
+      const response = await fetch('/api/v1/integrations/github/token/validate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      })
+      
+      const data = await response.json()
+      
+      if (data.valid) {
+        toast.success('Token valid', 'Your GitHub token is working correctly')
+      } else {
+        toast.error('Token invalid', data.error_message || 'Your token may have been revoked')
+        setIntegrations(prev => ({
+          ...prev,
+          githubConnected: false,
+        }))
+      }
+    } catch (error) {
+      toast.error('Error', 'Failed to validate token')
+    } finally {
+      setValidatingToken(false)
+    }
+  }
 
   // API keys
   const [apiKeys, setApiKeys] = useState<{ id: number; name: string; key: string; created: string; lastUsed: string }[]>([])
@@ -386,44 +548,186 @@ export default function SettingsPage() {
                   {activeTab === 'integrations' && (
                     <div className="space-y-6">
                       <h2 className="text-lg font-semibold text-[var(--text-primary)]">Integrations</h2>
+                      
+                      <p className="text-[var(--text-muted)] text-sm">
+                        Connect your accounts to scan private repositories. Your tokens are stored securely and only used for repository access.
+                      </p>
 
                       <div className="space-y-4">
                         {/* GitHub */}
-                        <div className="p-4 bg-[var(--bg-secondary)] rounded-lg flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className="p-3 bg-[var(--bg-tertiary)] rounded-lg">
-                              <Github className="w-6 h-6 text-[var(--text-primary)]" />
+                        <div className="p-4 bg-[var(--bg-secondary)] rounded-lg space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                              <div className="p-3 bg-[var(--bg-tertiary)] rounded-lg">
+                                <Github className="w-6 h-6 text-[var(--text-primary)]" />
+                              </div>
+                              <div>
+                                <p className="text-[var(--text-primary)] font-medium">GitHub</p>
+                                <p className="text-[var(--text-muted)] text-sm">
+                                  {integrations.githubConnected
+                                    ? 'Token configured - can scan private repos'
+                                    : 'Add a Personal Access Token to scan private repos'}
+                                </p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-[var(--text-primary)] font-medium">GitHub</p>
-                              <p className="text-[var(--text-muted)] text-sm">
-                                {integrations.githubConnected
-                                  ? `Connected as @${integrations.githubUsername}`
-                                  : 'Not connected'}
+                            <Badge variant={integrations.githubConnected ? 'success' : 'warning'}>
+                              {integrations.githubConnected ? 'Connected' : 'Not connected'}
+                            </Badge>
+                          </div>
+                          
+                          {/* GitHub Token Input */}
+                          <div className="space-y-2">
+                            <label className="block text-sm text-[var(--text-muted)]">
+                              Personal Access Token (PAT)
+                            </label>
+                            <div className="flex gap-2">
+                              <div className="relative flex-1">
+                                <Input
+                                  type={integrations.showGithubToken ? 'text' : 'password'}
+                                  value={integrations.githubToken}
+                                  onChange={(e) => setIntegrations({ ...integrations, githubToken: e.target.value })}
+                                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                                  className="pr-10"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setIntegrations({ ...integrations, showGithubToken: !integrations.showGithubToken })}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                >
+                                  {integrations.showGithubToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                              </div>
+                              <Button 
+                                onClick={() => handleSaveToken('github')} 
+                                disabled={savingToken || integrations.githubToken === '••••••••••••••••'}
+                              >
+                                {savingToken ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                <span className="ml-2">Save</span>
+                              </Button>
+                            </div>
+                            
+                            {/* Security actions for configured tokens */}
+                            {integrations.githubConnected && (
+                              <div className="flex gap-2 pt-2">
+                                <Button 
+                                  variant="secondary"
+                                  onClick={handleValidateToken}
+                                  disabled={validatingToken}
+                                  className="flex-1"
+                                >
+                                  {validatingToken ? (
+                                    <RefreshCw className="w-4 h-4 animate-spin mr-2" />
+                                  ) : (
+                                    <Check className="w-4 h-4 mr-2" />
+                                  )}
+                                  Verify Token
+                                </Button>
+                                <Button 
+                                  variant="secondary"
+                                  onClick={() => handleRevokeToken('github')}
+                                  disabled={savingToken}
+                                  className="flex-1 hover:bg-red-500/10 hover:text-red-500"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  Revoke Token
+                                </Button>
+                              </div>
+                            )}
+                            
+                            {integrations.githubUsername && (
+                              <p className="text-xs text-green-500">
+                                <Check className="w-3 h-3 inline mr-1" />
+                                Connected as <strong>@{integrations.githubUsername}</strong>
+                              </p>
+                            )}
+                            
+                            <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                              <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                                <Shield className="w-3 h-3 inline mr-1" />
+                                <strong>Security:</strong> Your token is encrypted with AES-256 before storage. 
+                                It is never logged, displayed, or transmitted in plaintext.
                               </p>
                             </div>
+                            
+                            <p className="text-xs text-[var(--text-muted)]">
+                              Create a token at{' '}
+                              <a 
+                                href="https://github.com/settings/tokens/new?scopes=repo&description=VaultSentry" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-[var(--accent)] hover:underline"
+                              >
+                                GitHub Settings → Developer settings → Personal access tokens
+                              </a>
+                              {' '}with <code className="bg-[var(--bg-tertiary)] px-1 rounded">repo</code> scope only.
+                            </p>
                           </div>
-                          <Button variant={integrations.githubConnected ? 'secondary' : 'primary'}>
-                            {integrations.githubConnected ? 'Disconnect' : 'Connect'}
-                          </Button>
                         </div>
 
                         {/* GitLab */}
-                        <div className="p-4 bg-[var(--bg-secondary)] rounded-lg flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className="p-3 bg-orange-500 rounded-lg">
-                              <Globe className="w-6 h-6 text-white" />
+                        <div className="p-4 bg-[var(--bg-secondary)] rounded-lg space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                              <div className="p-3 bg-orange-500 rounded-lg">
+                                <Globe className="w-6 h-6 text-white" />
+                              </div>
+                              <div>
+                                <p className="text-[var(--text-primary)] font-medium">GitLab</p>
+                                <p className="text-[var(--text-muted)] text-sm">
+                                  {integrations.gitlabConnected
+                                    ? 'Token configured - can scan private repos'
+                                    : 'Add a Personal Access Token to scan private repos'}
+                                </p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="text-[var(--text-primary)] font-medium">GitLab</p>
-                              <p className="text-[var(--text-muted)] text-sm">
-                                {integrations.gitlabConnected ? 'Connected' : 'Not connected'}
-                              </p>
-                            </div>
+                            <Badge variant={integrations.gitlabConnected ? 'success' : 'warning'}>
+                              {integrations.gitlabConnected ? 'Connected' : 'Not connected'}
+                            </Badge>
                           </div>
-                          <Button variant={integrations.gitlabConnected ? 'secondary' : 'primary'}>
-                            {integrations.gitlabConnected ? 'Disconnect' : 'Connect'}
-                          </Button>
+                          
+                          {/* GitLab Token Input */}
+                          <div className="space-y-2">
+                            <label className="block text-sm text-[var(--text-muted)]">
+                              Personal Access Token
+                            </label>
+                            <div className="flex gap-2">
+                              <div className="relative flex-1">
+                                <Input
+                                  type={integrations.showGitlabToken ? 'text' : 'password'}
+                                  value={integrations.gitlabToken}
+                                  onChange={(e) => setIntegrations({ ...integrations, gitlabToken: e.target.value })}
+                                  placeholder="glpat-xxxxxxxxxxxxxxxxxxxx"
+                                  className="pr-10"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setIntegrations({ ...integrations, showGitlabToken: !integrations.showGitlabToken })}
+                                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                                >
+                                  {integrations.showGitlabToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                              </div>
+                              <Button 
+                                onClick={() => handleSaveToken('gitlab')} 
+                                disabled={savingToken}
+                              >
+                                {savingToken ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                <span className="ml-2">Save</span>
+                              </Button>
+                            </div>
+                            <p className="text-xs text-[var(--text-muted)]">
+                              Create a token at{' '}
+                              <a 
+                                href="https://gitlab.com/-/profile/personal_access_tokens" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-[var(--accent)] hover:underline"
+                              >
+                                GitLab → Preferences → Access Tokens
+                              </a>
+                              {' '}with <code className="bg-[var(--bg-tertiary)] px-1 rounded">read_repository</code> scope.
+                            </p>
+                          </div>
                         </div>
 
                         {/* Slack */}

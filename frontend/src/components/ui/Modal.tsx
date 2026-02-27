@@ -61,6 +61,7 @@ const Modal = ({
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 animate-fade-in"
     >
       <div
+        onClick={(e) => e.stopPropagation()}
         className={cn(
           'w-full bg-[var(--bg-secondary)] rounded-md border border-[var(--border-color)] shadow-lg animate-scale-in',
           sizes[size]

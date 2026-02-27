@@ -19,7 +19,7 @@ import {
     Search,
     Trash2
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 const providerIcons: Record<string, React.ReactNode> = {
   github: <Github className="w-5 h-5" />,
@@ -43,6 +43,9 @@ export default function RepositoriesPage() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [scanningRepoId, setScanningRepoId] = useState<number | null>(null)
+  const [isAddingRepo, setIsAddingRepo] = useState(false)
+  const [urlError, setUrlError] = useState<string | null>(null)
+  const demoReposLoadedRef = useRef(false)
   const toast = useToast()
 
   // New repository form
@@ -58,11 +61,79 @@ export default function RepositoriesPage() {
     branch: 'main',
   })
 
+  // URL validation patterns
+  const validateRepositoryUrl = (url: string, provider: string): string | null => {
+    if (!url) return 'Repository URL is required'
+    
+    const patterns: Record<string, RegExp[]> = {
+      github: [
+        /^https?:\/\/github\.com\/[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+        /^git@github\.com:[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+      ],
+      gitlab: [
+        /^https?:\/\/gitlab\.com\/[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+        /^git@gitlab\.com:[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+      ],
+      bitbucket: [
+        /^https?:\/\/bitbucket\.org\/[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+        /^git@bitbucket\.org:[\w\-\.]+\/[\w\-\.]+(?:\.git)?$/i,
+      ],
+      azure: [
+        /^https?:\/\/dev\.azure\.com\/[\w\-\.]+\/[\w\-\.]+\/_git\/[\w\-\.]+$/i,
+      ],
+    }
+    
+    const providerPatterns = patterns[provider] || []
+    const isValid = providerPatterns.some(pattern => pattern.test(url.trim()))
+    
+    if (!isValid) {
+      const examples: Record<string, string> = {
+        github: 'https://github.com/owner/repo',
+        gitlab: 'https://gitlab.com/owner/repo',
+        bitbucket: 'https://bitbucket.org/owner/repo',
+        azure: 'https://dev.azure.com/org/project/_git/repo',
+      }
+      return `Invalid ${provider} URL format. Expected: ${examples[provider]}`
+    }
+    
+    return null
+  }
+
+  // Extract repo name from URL
+  const extractRepoName = (url: string): string => {
+    const match = url.match(/\/([^\/]+?)(?:\.git)?$/)
+    return match ? match[1] : ''
+  }
+
+  // Handle URL change with validation
+  const handleUrlChange = (url: string) => {
+    setNewRepo({ ...newRepo, url })
+    
+    // Auto-extract name if not set
+    if (!newRepo.name && url) {
+      const extractedName = extractRepoName(url)
+      if (extractedName) {
+        setNewRepo(prev => ({ ...prev, url, name: extractedName }))
+      }
+    }
+    
+    // Validate URL
+    if (url) {
+      const error = validateRepositoryUrl(url, newRepo.provider)
+      setUrlError(error)
+    } else {
+      setUrlError(null)
+    }
+  }
+
   const fetchRepositories = useCallback(async () => {
     try {
-      // Check for demo mode
+      // Check for demo mode - only load once
       if (isDemoMode()) {
-        setRepositories(DEMO_REPOSITORIES as unknown as Repository[])
+        if (!demoReposLoadedRef.current) {
+          setRepositories(DEMO_REPOSITORIES as unknown as Repository[])
+          demoReposLoadedRef.current = true
+        }
         setLoading(false)
         return
       }
@@ -81,29 +152,101 @@ export default function RepositoriesPage() {
   }, [fetchRepositories])
 
   const handleAddRepository = async () => {
+    // Validate required fields
     if (!newRepo.name || !newRepo.url) {
       toast.error('Missing fields', 'Please fill in all required fields')
       return
     }
 
+    // Validate URL format
+    const urlValidationError = validateRepositoryUrl(newRepo.url, newRepo.provider)
+    if (urlValidationError) {
+      setUrlError(urlValidationError)
+      toast.error('Invalid URL', urlValidationError)
+      return
+    }
+
+    setIsAddingRepo(true)
+    setUrlError(null)
+
     try {
+      // Handle demo mode - add to local state only
+      if (isDemoMode()) {
+        const demoRepo: Repository = {
+          id: Date.now(),
+          user_id: 'demo-user-id-12345',
+          name: newRepo.name,
+          url: newRepo.url,
+          provider: newRepo.provider,
+          branch: newRepo.branch,
+          status: 'active',
+          last_scan_at: null,
+          secrets_count: 0,
+          webhook_secret: null,
+          settings: {},
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+        setRepositories(prev => [demoRepo, ...prev])
+        setIsAddModalOpen(false)
+        setNewRepo({ name: '', url: '', provider: 'github', branch: 'main' })
+        toast.success('Repository added', `${demoRepo.name} has been added successfully`)
+        
+        // Simulate auto-scan in demo mode
+        setTimeout(() => {
+          toast.info('Scan started', 'Initial scan has been initiated automatically')
+        }, 1000)
+        return
+      }
+
+      console.log('[REPO ADD] Submitting repository:', newRepo)
       const repo = await repositoryService.create(newRepo)
-      setRepositories([...repositories, repo])
+      console.log('[REPO ADD] Repository created:', repo)
+      
+      setRepositories(prev => [repo, ...prev])
       setIsAddModalOpen(false)
       setNewRepo({ name: '', url: '', provider: 'github', branch: 'main' })
       toast.success('Repository added', `${repo.name} has been added successfully`)
+      
+      // Auto-trigger scan for the new repository
+      toast.info('Scan queued', 'Initial scan will start automatically')
+      
+      // Trigger scan in background
+      setTimeout(async () => {
+        try {
+          console.log('[REPO ADD] Auto-triggering scan for repository:', repo.id)
+          await repositoryService.scan(repo.id)
+          toast.success('Scan started', 'Repository scan is now running')
+        } catch (scanError) {
+          console.error('[REPO ADD] Auto-scan failed:', scanError)
+          toast.warning('Scan delayed', 'Initial scan will retry shortly')
+        }
+      }, 2000)
+      
     } catch (error) {
-      toast.error('Failed to add repository')
+      console.error('[REPO ADD] Failed to add repository:', error)
+      const errorMessage = error instanceof Error ? error.message : 'Please try again'
+      toast.error('Failed to add repository', errorMessage)
+    } finally {
+      setIsAddingRepo(false)
     }
   }
 
   const handleScanRepository = async (repoId: number) => {
     setScanningRepoId(repoId)
     try {
+      // Handle demo mode
+      if (isDemoMode()) {
+        await new Promise(resolve => setTimeout(resolve, 1500)) // Simulate scan
+        toast.success('Scan completed', 'Repository scan has been completed (demo mode)')
+        return
+      }
+      
       await repositoryService.scan(repoId)
       toast.success('Scan started', 'Repository scan has been initiated')
     } catch (error) {
-      toast.error('Failed to start scan')
+      console.error('Failed to start scan:', error)
+      toast.error('Failed to start scan', error instanceof Error ? error.message : 'Please try again')
     } finally {
       setScanningRepoId(null)
     }
@@ -111,11 +254,19 @@ export default function RepositoriesPage() {
 
   const handleDeleteRepository = async (repoId: number) => {
     try {
+      // Handle demo mode
+      if (isDemoMode()) {
+        setRepositories(prev => prev.filter(r => r.id !== repoId))
+        toast.success('Repository removed')
+        return
+      }
+      
       await repositoryService.delete(repoId)
-      setRepositories(repositories.filter(r => r.id !== repoId))
+      setRepositories(prev => prev.filter(r => r.id !== repoId))
       toast.success('Repository removed')
     } catch (error) {
-      toast.error('Failed to delete repository')
+      console.error('Failed to delete repository:', error)
+      toast.error('Failed to delete repository', error instanceof Error ? error.message : 'Please try again')
     }
   }
 
@@ -287,7 +438,11 @@ export default function RepositoriesPage() {
       {/* Add Repository Modal */}
       <Modal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        onClose={() => {
+          setIsAddModalOpen(false)
+          setUrlError(null)
+          setNewRepo({ name: '', url: '', provider: 'github', branch: 'main' })
+        }}
         title="Add Repository"
         description="Connect a new repository for secret scanning"
       >
@@ -297,13 +452,24 @@ export default function RepositoriesPage() {
             placeholder="my-awesome-project"
             value={newRepo.name}
             onChange={(e) => setNewRepo({ ...newRepo, name: e.target.value })}
+            disabled={isAddingRepo}
           />
-          <Input
-            label="Repository URL"
-            placeholder="https://github.com/username/repo"
-            value={newRepo.url}
-            onChange={(e) => setNewRepo({ ...newRepo, url: e.target.value })}
-          />
+          <div>
+            <Input
+              label="Repository URL"
+              placeholder="https://github.com/username/repo"
+              value={newRepo.url}
+              onChange={(e) => handleUrlChange(e.target.value)}
+              disabled={isAddingRepo}
+              error={urlError || undefined}
+            />
+            {urlError && (
+              <p className="mt-1 text-sm text-red-400">{urlError}</p>
+            )}
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Enter the full repository URL (HTTPS or SSH format)
+            </p>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <Select
               label="Provider"
@@ -314,22 +480,49 @@ export default function RepositoriesPage() {
                 { value: 'azure', label: 'Azure DevOps' },
               ]}
               value={newRepo.provider}
-              onChange={(value) => setNewRepo({ ...newRepo, provider: value as any })}
+              onChange={(value) => {
+                setNewRepo({ ...newRepo, provider: value as any })
+                // Re-validate URL when provider changes
+                if (newRepo.url) {
+                  const error = validateRepositoryUrl(newRepo.url, value)
+                  setUrlError(error)
+                }
+              }}
+              disabled={isAddingRepo}
             />
             <Input
               label="Branch"
               placeholder="main"
               value={newRepo.branch}
               onChange={(e) => setNewRepo({ ...newRepo, branch: e.target.value })}
+              disabled={isAddingRepo}
             />
           </div>
 
           <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[var(--border-color)]">
-            <Button variant="ghost" onClick={() => setIsAddModalOpen(false)}>
+            <Button 
+              type="button" 
+              variant="ghost" 
+              onClick={() => {
+                setIsAddModalOpen(false)
+                setUrlError(null)
+                setNewRepo({ name: '', url: '', provider: 'github', branch: 'main' })
+              }}
+              disabled={isAddingRepo}
+            >
               Cancel
             </Button>
-            <Button variant="primary" onClick={handleAddRepository}>
-              Add Repository
+            <Button 
+              type="button" 
+              variant="primary" 
+              onClick={() => {
+                console.log('Add Repository clicked', newRepo)
+                handleAddRepository()
+              }}
+              disabled={isAddingRepo || !!urlError}
+              leftIcon={isAddingRepo ? <RefreshCw className="w-4 h-4 animate-spin" /> : undefined}
+            >
+              {isAddingRepo ? 'Adding...' : 'Add Repository'}
             </Button>
           </div>
         </div>

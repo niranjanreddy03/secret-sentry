@@ -9,6 +9,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- =====================================================
 
 CREATE TYPE user_role AS ENUM ('admin', 'developer', 'viewer');
+CREATE TYPE subscription_tier AS ENUM ('basic', 'premium', 'premium_plus');
 CREATE TYPE provider_type AS ENUM ('github', 'gitlab', 'bitbucket', 'azure');
 CREATE TYPE scan_status AS ENUM ('pending', 'running', 'completed', 'failed', 'cancelled');
 CREATE TYPE risk_level AS ENUM ('critical', 'high', 'medium', 'low', 'info');
@@ -30,6 +31,17 @@ CREATE TABLE public.users (
     company TEXT,
     timezone TEXT DEFAULT 'UTC',
     notification_preferences JSONB DEFAULT '{"email": true, "slack": false, "critical_only": false}'::jsonb,
+    -- Subscription fields
+    subscription_tier subscription_tier DEFAULT 'basic',
+    subscription_started_at TIMESTAMPTZ,
+    subscription_expires_at TIMESTAMPTZ,
+    is_trial BOOLEAN DEFAULT FALSE,
+    trial_ends_at TIMESTAMPTZ,
+    scans_this_week INTEGER DEFAULT 0,
+    scans_today INTEGER DEFAULT 0,
+    last_scan_reset_date TIMESTAMPTZ,
+    last_weekly_reset_date TIMESTAMPTZ,
+    -- Timestamps
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -40,6 +52,10 @@ ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 -- Users can read their own data
 CREATE POLICY "Users can view own profile" ON public.users
     FOR SELECT USING (auth.uid() = id);
+
+-- Users can insert their own profile (needed if trigger fails)
+CREATE POLICY "Users can insert own profile" ON public.users
+    FOR INSERT WITH CHECK (auth.uid() = id);
 
 -- Users can update their own data
 CREATE POLICY "Users can update own profile" ON public.users
@@ -361,16 +377,18 @@ CREATE TRIGGER update_scan_patterns_updated_at
     BEFORE UPDATE ON public.scan_patterns
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- Function to create user profile on signup
+-- Function to create user profile on signup with basic subscription
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.users (id, email, full_name, avatar_url)
+    INSERT INTO public.users (id, email, full_name, avatar_url, subscription_tier, subscription_started_at)
     VALUES (
         NEW.id,
         NEW.email,
         NEW.raw_user_meta_data->>'full_name',
-        NEW.raw_user_meta_data->>'avatar_url'
+        NEW.raw_user_meta_data->>'avatar_url',
+        'basic',
+        NOW()
     );
     RETURN NEW;
 END;
@@ -487,6 +505,94 @@ INSERT INTO public.scan_patterns (name, description, pattern, risk_level, is_glo
 ('Discord Token', 'Discord Bot Token', '[MN][A-Za-z\\d]{23,}\\.[\\w-]{6}\\.[\\w-]{27}', 'high', TRUE),
 ('Heroku API Key', 'Heroku API Key', '(?i)heroku(.{0,20})?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', 'high', TRUE),
 ('Password in URL', 'Password embedded in URL', '://[^:]+:[^@]+@', 'critical', TRUE);
+
+-- =====================================================
+-- USER SUBSCRIPTION MANAGEMENT FUNCTIONS
+-- =====================================================
+
+-- Function to update user subscription tier (for admin use)
+CREATE OR REPLACE FUNCTION public.update_user_subscription(
+    user_email TEXT,
+    new_tier subscription_tier,
+    expires_at TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS TABLE(
+    user_id UUID,
+    email TEXT,
+    old_tier subscription_tier,
+    new_tier subscription_tier,
+    updated_at TIMESTAMPTZ
+) AS $$
+DECLARE
+    v_user_id UUID;
+    v_old_tier subscription_tier;
+BEGIN
+    -- Get user by email
+    SELECT u.id, u.subscription_tier INTO v_user_id, v_old_tier
+    FROM public.users u
+    WHERE u.email = user_email;
+    
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'User with email % not found', user_email;
+    END IF;
+    
+    -- Update subscription
+    UPDATE public.users
+    SET 
+        subscription_tier = new_tier,
+        subscription_started_at = COALESCE(subscription_started_at, NOW()),
+        subscription_expires_at = expires_at,
+        updated_at = NOW()
+    WHERE id = v_user_id;
+    
+    RETURN QUERY
+    SELECT v_user_id, user_email, v_old_tier, new_tier, NOW();
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Quick helper functions for common tier changes
+CREATE OR REPLACE FUNCTION public.set_user_basic(user_email TEXT)
+RETURNS VOID AS $$
+BEGIN
+    PERFORM public.update_user_subscription(user_email, 'basic'::subscription_tier);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.set_user_premium(user_email TEXT)
+RETURNS VOID AS $$
+BEGIN
+    PERFORM public.update_user_subscription(user_email, 'premium'::subscription_tier);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.set_user_premium_plus(user_email TEXT)
+RETURNS VOID AS $$
+BEGIN
+    PERFORM public.update_user_subscription(user_email, 'premium_plus'::subscription_tier);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- View to list all users with their subscription info
+CREATE OR REPLACE VIEW public.user_subscriptions AS
+SELECT 
+    id,
+    email,
+    full_name,
+    subscription_tier,
+    subscription_started_at,
+    subscription_expires_at,
+    is_trial,
+    trial_ends_at,
+    created_at
+FROM public.users
+ORDER BY created_at DESC;
+
+-- Grant access to admin functions (only for service role)
+GRANT EXECUTE ON FUNCTION public.update_user_subscription TO service_role;
+GRANT EXECUTE ON FUNCTION public.set_user_basic TO service_role;
+GRANT EXECUTE ON FUNCTION public.set_user_premium TO service_role;
+GRANT EXECUTE ON FUNCTION public.set_user_premium_plus TO service_role;
+GRANT SELECT ON public.user_subscriptions TO service_role;
 
 -- =====================================================
 -- GRANT PERMISSIONS

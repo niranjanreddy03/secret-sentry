@@ -1,9 +1,12 @@
 'use client'
 
 import { useAuth } from '@/contexts/AuthContext'
+import { useSubscription } from '@/contexts/SubscriptionContext'
+import { SubscriptionBadge } from '@/components/ui/SubscriptionBadge'
 import {
     Bell,
     ChevronLeft,
+    CreditCard,
     FileText,
     FolderGit2,
     HelpCircle,
@@ -42,6 +45,7 @@ const adminNavigation = [
 ]
 
 const bottomNavigation = [
+  { name: 'Pricing', href: '/pricing', icon: CreditCard },
   { name: 'Settings', href: '/settings', icon: Settings },
   { name: 'Help', href: '/help', icon: HelpCircle },
 ]
@@ -171,6 +175,7 @@ export default function Sidebar({ isOpen, onToggle }: SidebarProps) {
 
 function UserSection() {
   const { user, supabaseUser } = useAuth()
+  const { status } = useSubscription()
   
   // Use supabaseUser.email as fallback since user profile might not exist in DB yet
   const email = user?.email || supabaseUser?.email || ''
@@ -185,6 +190,25 @@ function UserSection() {
 
   return (
     <div className="p-3 border-t" style={{ borderColor: 'var(--border-color)' }}>
+      {/* Subscription Badge */}
+      <div className="px-2 mb-3">
+        <SubscriptionBadge size="sm" />
+        {status && status.tier === 'basic' && (
+          <div className="mt-2 space-y-1">
+            <div className="flex justify-between text-xs" style={{ color: 'var(--text-muted)' }}>
+              <span>Repos</span>
+              <span>{status.repositories_used}/{status.repositories_limit === -1 ? '∞' : status.repositories_limit}</span>
+            </div>
+            <div className="h-1 rounded-full" style={{ background: 'var(--bg-tertiary)' }}>
+              <div 
+                className="h-full rounded-full bg-blue-500"
+                style={{ width: `${status.repositories_limit === -1 ? 0 : Math.min((status.repositories_used / status.repositories_limit) * 100, 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+      
       <div className="flex items-center gap-3 p-2">
         <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>
           <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{initials}</span>

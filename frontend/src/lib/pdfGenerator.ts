@@ -377,28 +377,33 @@ export function generateQuickReport(
   scans: Scan[],
   reportType: 'weekly' | 'monthly' | 'custom' = 'weekly'
 ): void {
-  const criticalCount = secrets.filter(s => s.risk_level === 'critical').length
-  const highCount = secrets.filter(s => s.risk_level === 'high').length
-  const mediumCount = secrets.filter(s => s.risk_level === 'medium').length
-  const lowCount = secrets.filter(s => s.risk_level === 'low' || s.risk_level === 'info').length
+  // Ensure we have arrays to work with
+  const safeSecrets = secrets || []
+  const safeRepos = repositories || []
+  const safeScans = scans || []
   
-  const avgRiskScore = repositories.length > 0
-    ? Math.round(repositories.reduce((sum, r) => sum + (r.risk_score || 0), 0) / repositories.length)
+  const criticalCount = safeSecrets.filter(s => s.risk_level === 'critical').length
+  const highCount = safeSecrets.filter(s => s.risk_level === 'high').length
+  const mediumCount = safeSecrets.filter(s => s.risk_level === 'medium').length
+  const lowCount = safeSecrets.filter(s => s.risk_level === 'low' || s.risk_level === 'info').length
+  
+  const avgRiskScore = safeRepos.length > 0
+    ? Math.round(safeRepos.reduce((sum, r) => sum + (r.risk_score || 0), 0) / safeRepos.length)
     : 0
 
   const reportData: ReportData = {
     type: reportType,
-    repositories,
-    secrets,
-    scans,
+    repositories: safeRepos,
+    secrets: safeSecrets,
+    scans: safeScans,
     summary: {
-      totalSecrets: secrets.length,
+      totalSecrets: safeSecrets.length,
       criticalCount,
       highCount,
       mediumCount,
       lowCount,
-      totalScans: scans.length,
-      repositoriesScanned: repositories.length,
+      totalScans: safeScans.length,
+      repositoriesScanned: safeRepos.length,
       avgRiskScore,
     },
   }

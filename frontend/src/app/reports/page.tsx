@@ -41,6 +41,10 @@ export default function ReportsPage() {
           ...s,
           repository_id: s.repository.id,
           started_at: s.created_at,
+          repository_name: s.repository_name || s.repository.name,
+          duration: s.duration || '--',
+          files_scanned: s.files_scanned || 0,
+          triggered_by: s.triggered_by || 'Manual',
         })) as Scan[])
         setRepositories(DEMO_REPOSITORIES.map(r => ({
           ...r,
@@ -49,6 +53,7 @@ export default function ReportsPage() {
           criticality_tier: 'tier_2' as const,
           open_findings_count: r.secrets_count,
           critical_findings_count: Math.floor(r.secrets_count / 3),
+          risk_score: r.risk_score || 50,
         })) as Repository[])
         setSecrets(DEMO_SECRETS.map(s => ({
           id: s.id,
@@ -63,6 +68,7 @@ export default function ReportsPage() {
           masked_value: s.masked_value,
           confidence: 0.95,
           business_impact_score: s.severity === 'critical' ? 95 : s.severity === 'high' ? 75 : 50,
+          ml_risk_score: s.severity === 'critical' ? 95 : s.severity === 'high' ? 75 : s.severity === 'medium' ? 50 : 25,
         })) as Secret[])
         setLoading(false)
         return
@@ -179,9 +185,13 @@ export default function ReportsPage() {
                 <p className="text-[var(--text-muted)] mt-1">Generate and download security reports</p>
               </div>
               <Button
+                type="button"
                 variant="primary"
                 leftIcon={<Plus className="w-5 h-5" />}
-                onClick={() => setIsModalOpen(true)}
+                onClick={() => {
+                  console.log('Opening modal')
+                  setIsModalOpen(true)
+                }}
               >
                 Generate Report
               </Button>
@@ -411,13 +421,17 @@ export default function ReportsPage() {
           </div>
 
           <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-[var(--border-color)]">
-            <Button variant="ghost" onClick={() => setIsModalOpen(false)}>
+            <Button type="button" variant="ghost" onClick={() => setIsModalOpen(false)}>
               Cancel
             </Button>
             <Button
+              type="button"
               variant="primary"
               leftIcon={isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
-              onClick={handleGenerateReport}
+              onClick={() => {
+                console.log('Generate Report clicked')
+                handleGenerateReport()
+              }}
               disabled={isGenerating}
             >
               {isGenerating ? 'Generating...' : 'Generate Report'}

@@ -4,7 +4,7 @@ Vault Sentry - API v1 Router
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, users, repositories, scans, secrets, alerts, reports, dashboard, cloud
+from app.api.v1.endpoints import auth, users, repositories, scans, secrets, alerts, reports, dashboard, cloud, subscription, github_token
 
 api_router = APIRouter()
 
@@ -61,5 +61,17 @@ api_router.include_router(
     cloud.router,
     prefix="/cloud",
     tags=["Cloud Integration"]
+)
+
+api_router.include_router(
+    subscription.router,
+    prefix="/subscription",
+    tags=["Subscription"]
+)
+
+api_router.include_router(
+    github_token.router,
+    prefix="/integrations",
+    tags=["Integrations"]
 )
 

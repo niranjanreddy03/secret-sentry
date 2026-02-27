@@ -210,6 +210,18 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* Demo Login Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setEmail('demo@vaultsentry.io')
+                setPassword('Demo@2024!')
+              }}
+              className="w-full mb-4 py-2.5 px-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg text-sm font-medium text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+            >
+              🎯 Fill Demo Credentials (demo@vaultsentry.io / Demo@2024!)
+            </button>
+
             {/* OAuth Buttons */}
             <div className="grid grid-cols-2 gap-3">
               <button 

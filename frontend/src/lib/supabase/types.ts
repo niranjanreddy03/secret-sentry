@@ -18,6 +18,19 @@ export type Database = {
           role: 'admin' | 'developer' | 'viewer'
           company: string | null
           timezone: string
+          subscription_tier: 'basic' | 'premium' | 'premium_plus'
+          subscription_started_at: string | null
+          subscription_expires_at: string | null
+          is_trial: boolean
+          trial_ends_at: string | null
+          scans_this_week: number
+          scans_today: number
+          github_token: string | null
+          github_username: string | null
+          github_token_hash: string | null
+          github_token_added_at: string | null
+          gitlab_token: string | null
+          bitbucket_token: string | null
           created_at: string
           updated_at: string
         }
@@ -29,6 +42,12 @@ export type Database = {
           role?: 'admin' | 'developer' | 'viewer'
           company?: string | null
           timezone?: string
+          subscription_tier?: 'basic' | 'premium' | 'premium_plus'
+          is_trial?: boolean
+          github_token?: string | null
+          github_username?: string | null
+          gitlab_token?: string | null
+          bitbucket_token?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -40,6 +59,12 @@ export type Database = {
           role?: 'admin' | 'developer' | 'viewer'
           company?: string | null
           timezone?: string
+          subscription_tier?: 'basic' | 'premium' | 'premium_plus'
+          is_trial?: boolean
+          github_token?: string | null
+          github_username?: string | null
+          gitlab_token?: string | null
+          bitbucket_token?: string | null
           updated_at?: string
         }
       }

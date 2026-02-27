@@ -139,45 +139,167 @@ export const userService = {
 export const repositoryService = {
   async getAll(): Promise<Repository[]> {
     const supabase = getSupabaseClient()
+    console.log('[REPO SERVICE] Fetching all repositories')
+    
     const { data, error } = await supabase
       .from('repositories')
       .select('*')
       .order('created_at', { ascending: false })
 
-    if (error) throw error
+    if (error) {
+      console.error('[REPO SERVICE] Failed to fetch repositories:', error)
+      throw new Error(`Failed to fetch repositories: ${error.message}`)
+    }
+    
+    console.log('[REPO SERVICE] Fetched repositories:', data?.length || 0)
     return data || []
   },
 
   async getById(id: number): Promise<Repository> {
     const supabase = getSupabaseClient()
+    console.log('[REPO SERVICE] Fetching repository:', id)
+    
     const { data, error } = await supabase
       .from('repositories')
       .select('*')
       .eq('id', id)
       .single()
 
-    if (error) throw error
+    if (error) {
+      console.error('[REPO SERVICE] Failed to fetch repository:', error)
+      throw new Error(`Repository not found: ${error.message}`)
+    }
     return data
   },
 
   async create(repo: Omit<InsertRepository, 'user_id'>): Promise<Repository> {
     const supabase = getSupabaseClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Not authenticated')
+    console.log('[REPO SERVICE] Creating repository:', repo.name, repo.url)
+    
+    // Get session (uses cached data, faster than getUser)
+    console.log('[REPO SERVICE] Getting session...')
+    let user
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      if (sessionError) {
+        console.error('[REPO SERVICE] Session error:', sessionError.message)
+        throw new Error('Session error. Please log in again.')
+      }
+      user = session?.user
+    } catch (authError: any) {
+      console.error('[REPO SERVICE] Auth error:', authError.message)
+      throw new Error(authError.message || 'Authentication failed. Please refresh and try again.')
+    }
+    
+    if (!user) {
+      console.error('[REPO SERVICE] User not authenticated')
+      throw new Error('Not authenticated. Please log in again.')
+    }
+    
+    console.log('[REPO SERVICE] User authenticated:', user.id)
 
-    const { data, error } = await supabase
-      .from('repositories')
-      // @ts-expect-error - Supabase type inference issue with @supabase/ssr
-      .insert({ ...repo, user_id: user.id } as InsertRepository)
-      .select()
-      .single()
+    // Try to ensure user profile exists with timeout
+    try {
+      console.log('[REPO SERVICE] Checking/creating user profile...')
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('User profile check timed out')), 5000)
+      )
+      
+      const userCheckPromise = (async () => {
+        const { data: existingUser, error: userCheckError } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', user.id)
+          .single()
+        
+        if (userCheckError && userCheckError.code !== 'PGRST116') {
+          console.log('[REPO SERVICE] User check error (non-critical):', userCheckError.message)
+        }
+        
+        if (!existingUser) {
+          console.log('[REPO SERVICE] User profile not found, creating...')
+          const { error: createUserError } = await supabase
+            .from('users')
+            .insert({
+              id: user.id,
+              email: user.email || '',
+              full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'User',
+              subscription_tier: 'basic',
+            })
+          
+          if (createUserError && createUserError.code !== '23505') {
+            console.warn('[REPO SERVICE] User profile creation failed (non-critical):', createUserError.message)
+          } else {
+            console.log('[REPO SERVICE] User profile created successfully')
+          }
+        }
+      })()
+      
+      await Promise.race([userCheckPromise, timeoutPromise])
+    } catch (profileError) {
+      // Non-critical - continue with repository creation anyway
+      console.warn('[REPO SERVICE] User profile check failed (continuing):', profileError)
+    }
 
-    if (error) throw error
+    // Prepare repository data with all required fields
+    const repoData: InsertRepository = {
+      ...repo,
+      user_id: user.id,
+      status: repo.status || 'active',
+      secrets_count: 0,
+    }
+    
+    console.log('[REPO SERVICE] Inserting repository data:', repoData)
+
+    // Insert with timeout
+    let data, error
+    try {
+      const insertPromise = supabase
+        .from('repositories')
+        // @ts-expect-error - Supabase type inference issue with @supabase/ssr
+        .insert(repoData)
+        .select()
+        .single()
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Repository insert timed out. Please try again.')), 15000)
+      )
+      
+      const result = await Promise.race([insertPromise, timeoutPromise]) as { data: any, error: any }
+      data = result.data
+      error = result.error
+    } catch (insertError: any) {
+      console.error('[REPO SERVICE] Insert error:', insertError.message)
+      throw new Error(insertError.message || 'Failed to create repository. Please try again.')
+    }
+
+    if (error) {
+      console.error('[REPO SERVICE] Failed to create repository:', error)
+      
+      // Provide user-friendly error messages
+      if (error.code === '23505') {
+        throw new Error('A repository with this URL already exists')
+      } else if (error.code === '23503') {
+        throw new Error('Invalid user reference. Please log in again.')
+      } else if (error.code === '42501') {
+        throw new Error('Permission denied. Check your subscription.')
+      }
+      
+      throw new Error(`Failed to save repository: ${error.message}`)
+    }
+    
+    if (!data) {
+      console.error('[REPO SERVICE] No data returned after insert')
+      throw new Error('Repository was not saved. Please try again.')
+    }
+    
+    console.log('[REPO SERVICE] Repository created successfully:', data.id)
     return data
   },
 
   async update(id: number, updates: UpdateRepository): Promise<Repository> {
     const supabase = getSupabaseClient()
+    console.log('[REPO SERVICE] Updating repository:', id)
     const { data, error } = await supabase
       .from('repositories')
       // @ts-expect-error - Supabase type inference issue with @supabase/ssr
@@ -200,10 +322,15 @@ export const repositoryService = {
     if (error) throw error
   },
 
-  async scan(id: number): Promise<Scan> {
+  async scan(id: number, maxRetries: number = 3): Promise<Scan> {
     const supabase = getSupabaseClient()
+    console.log('[REPO SERVICE] Starting scan for repository:', id)
+    
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Not authenticated')
+    if (!user) {
+      console.error('[REPO SERVICE] User not authenticated for scan')
+      throw new Error('Not authenticated')
+    }
 
     // Get repository details
     const { data: repo, error: repoError } = await supabase
@@ -212,10 +339,14 @@ export const repositoryService = {
       .eq('id', id)
       .single()
 
-    if (repoError || !repo) throw new Error('Repository not found')
+    if (repoError || !repo) {
+      console.error('[REPO SERVICE] Repository not found for scan:', repoError)
+      throw new Error('Repository not found')
+    }
     
     // Type assertion for repo since Supabase type inference has issues with @supabase/ssr
     const repository = repo as Repository
+    console.log('[REPO SERVICE] Repository found:', repository.name, repository.url)
 
     // Create a new scan record in Supabase
     const { data, error } = await supabase
@@ -231,11 +362,18 @@ export const repositoryService = {
       .select()
       .single()
 
-    if (error) throw error
-    if (!data) throw new Error('Failed to create scan')
+    if (error) {
+      console.error('[REPO SERVICE] Failed to create scan record:', error)
+      throw new Error(`Failed to create scan: ${error.message}`)
+    }
+    if (!data) {
+      console.error('[REPO SERVICE] No scan data returned')
+      throw new Error('Failed to create scan')
+    }
     
     // Type assertion for scan data since Supabase type inference has issues with @supabase/ssr
     const scanData = data as Scan
+    console.log('[REPO SERVICE] Scan record created:', scanData.id)
 
     // Update repository last_scan_at
     await supabase
@@ -244,21 +382,55 @@ export const repositoryService = {
       .update({ last_scan_at: new Date().toISOString() } as UpdateRepository)
       .eq('id', id)
 
-    // Call backend API to trigger the actual scan
-    try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
-      await fetch(`${apiUrl}/scans/trigger`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scan_id: scanData.id,
-          repository_id: id,
-          repository_url: repository.url,
-          branch: repository.branch || 'main',
-        }),
-      })
-    } catch (err) {
-      console.warn('Backend API not available, scan created in Supabase only:', err)
+    // Call backend API to trigger the actual scan with retry logic
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1'
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`[REPO SERVICE] Triggering scan API (attempt ${attempt}/${maxRetries})`)
+        
+        const response = await fetch(`${apiUrl}/scans/trigger`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scan_id: scanData.id,
+            repository_id: id,
+            repository_url: repository.url,
+            branch: repository.branch || 'main',
+          }),
+        })
+        
+        if (response.ok) {
+          console.log('[REPO SERVICE] Scan triggered successfully')
+          break
+        }
+        
+        // Check for rate limit
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('Retry-After')
+          const waitTime = retryAfter ? parseInt(retryAfter) * 1000 : attempt * 2000
+          console.warn(`[REPO SERVICE] Rate limited, waiting ${waitTime}ms before retry`)
+          await new Promise(resolve => setTimeout(resolve, waitTime))
+          continue
+        }
+        
+        // Other errors
+        const errorText = await response.text()
+        console.error(`[REPO SERVICE] Scan trigger failed (${response.status}):`, errorText)
+        
+        if (attempt === maxRetries) {
+          console.warn('[REPO SERVICE] All retry attempts failed, scan created in Supabase only')
+        }
+        
+      } catch (err) {
+        console.warn(`[REPO SERVICE] Scan trigger attempt ${attempt} failed:`, err)
+        
+        if (attempt < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 1000))
+        } else {
+          console.warn('[REPO SERVICE] Backend API not available, scan created in Supabase only')
+        }
+      }
     }
 
     return scanData

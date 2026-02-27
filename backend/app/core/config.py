@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     ]
     
     # GitHub Integration
+    GITHUB_TOKEN: Optional[str] = None  # Personal Access Token for cloning private repos
     GITHUB_CLIENT_ID: Optional[str] = None
     GITHUB_CLIENT_SECRET: Optional[str] = None
     GITHUB_WEBHOOK_SECRET: Optional[str] = None

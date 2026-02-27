@@ -45,6 +45,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error('Error fetching user profile:', error)
         return null
       }
+      
+      // Ensure user has a basic subscription tier if not set
+      if (data && !data.subscription_tier) {
+        const { data: updatedData } = await supabase
+          .from('users')
+          .update({
+            subscription_tier: 'basic',
+            subscription_started_at: new Date().toISOString()
+          })
+          .eq('id', userId)
+          .select()
+          .single()
+        
+        return updatedData || { ...data, subscription_tier: 'basic' }
+      }
+      
       return data
     } catch (error) {
       console.error('Error fetching user profile:', error)
@@ -67,6 +83,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             role: 'admin',
             company: 'Vault Sentry Demo',
             timezone: 'UTC',
+            subscription_tier: 'premium_plus',
+            subscription_started_at: new Date().toISOString(),
+            subscription_expires_at: null,
+            is_trial: false,
+            trial_ends_at: null,
+            scans_this_week: 0,
+            scans_today: 0,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }
@@ -133,22 +156,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase, fetchUserProfile, router])
 
   // Demo mode credentials
-  const DEMO_EMAIL = 'demo@VaultSentry.io'
+  const DEMO_EMAIL = 'demo@vaultsentry.io'
   const DEMO_PASSWORD = 'Demo@2024!'
 
   const login = async (email: string, password: string) => {
     setIsLoading(true)
     try {
       // Demo mode bypass - for presentations without Supabase
-      if (email === DEMO_EMAIL && password === DEMO_PASSWORD) {
+      if (email.toLowerCase() === DEMO_EMAIL && password === DEMO_PASSWORD) {
         const demoUser: User = {
           id: 'demo-user-id-12345',
-          email: DEMO_EMAIL,
+          email: email,
           full_name: 'Demo User',
           avatar_url: null,
           role: 'admin',
           company: 'Vault Sentry Demo',
           timezone: 'UTC',
+          subscription_tier: 'premium_plus',
+          subscription_started_at: new Date().toISOString(),
+          subscription_expires_at: null,
+          is_trial: false,
+          trial_ends_at: null,
+          scans_this_week: 0,
+          scans_today: 0,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         }
@@ -217,10 +247,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSupabaseUser(null)
       setSession(null)
       
-      // Sign out from Supabase with global scope
-      const { error } = await supabase.auth.signOut({ scope: 'global' })
-      if (error) {
-        console.error('Logout error:', error)
+      // Sign out from Supabase with timeout (don't block on network)
+      try {
+        const signOutPromise = supabase.auth.signOut({ scope: 'local' })
+        const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3000))
+        await Promise.race([signOutPromise, timeoutPromise])
+      } catch (error) {
+        console.error('Logout error (continuing):', error)
       }
       
       // Force redirect to login
